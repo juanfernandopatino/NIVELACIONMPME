@@ -1,0 +1,323 @@
+"""Helpers de UI reutilizables: header, tarjetas, pildoras y tablas HTML."""
+
+from datetime import datetime
+
+import pandas as pd
+
+from styles import COMPANIA_COLORES, ESTADO_COLORES, CENTRO_COLORES, CLASIFICACION_COLORES
+
+
+def formato_valor(valor):
+    """Nunca mostrar None/nan; helper de formato central."""
+    if valor is None:
+        return ""
+    try:
+        if valor != valor:  # NaN
+            return ""
+    except TypeError:
+        pass
+    return valor
+
+
+def render_header(titulo: str, subtitulo_actualizacion: str | None = None, semana: int | None = None):
+    if subtitulo_actualizacion is None:
+        subtitulo_actualizacion = datetime.now().strftime("%d de %B de %Y, %H:%M")
+    badge = f'<span class="status-dot"></span>Datos actualizados al <b>{subtitulo_actualizacion}</b>'
+    if semana is not None:
+        badge += f" &nbsp;·&nbsp; Semana {semana}"
+    html = f"""
+    <div class="app-header">
+        <h1>{titulo}</h1>
+        <div class="header-rule"></div>
+        <span class="header-badge">{badge}</span>
+    </div>
+    """
+    return html
+
+
+def render_pill(texto: str, color: str) -> str:
+    return f'<span class="pill" style="background:{color}">{texto}</span>'
+
+
+def render_metric_table(row_labels: list[str], companias: list[str], valores: dict, filas_totales: set[str] | None = None) -> str:
+    """
+    valores: dict[label][compania] -> string ya formateado (ej "$100.597M")
+    filas_totales: labels que deben resaltarse en negrilla (fila "Valor Inventario Total")
+    """
+    filas_totales = filas_totales or set()
+    header_cells = "".join(
+        f'<th>{render_pill(c, COMPANIA_COLORES.get(c, "#013066"))}</th>' for c in companias
+    )
+    rows_html = ""
+    for label in row_labels:
+        clase = "metric-total" if label in filas_totales else ""
+        cells = "".join(f"<td>{formato_valor(valores.get(label, {}).get(c, ''))}</td>" for c in companias)
+        rows_html += f'<tr class="{clase}"><td>{label}</td>{cells}</tr>'
+
+    return f"""
+    <table class="metric-table">
+        <thead><tr><th></th>{header_cells}</tr></thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+    """
+
+
+def render_status_strip(estados: list[tuple[str, str]]) -> str:
+    """estados: lista de (nombre_estado, texto_a_mostrar) en el orden fijo deseado."""
+    segs = "".join(
+        f'<div class="seg" style="background:{ESTADO_COLORES.get(nombre, "#888")}">{texto}</div>'
+        for nombre, texto in estados
+    )
+    return f'<div class="status-strip">{segs}</div>'
+
+
+def render_count_badges(pares: list[tuple[str, str, str]]) -> str:
+    """pares: lista de (etiqueta, valor, color)."""
+    return "".join(
+        f'<span class="count-badge" style="background:{color}">{etiqueta}: {valor}</span>'
+        for etiqueta, valor, color in pares
+    )
+
+
+def render_detail_table(columnas: list[str], filas: list[tuple], columna_estado_idx: int | None = None) -> str:
+    """
+    Renderiza tabla HTML de detalle usando itertuples-friendly input (lista de tuplas),
+    NUNCA con iterrows + concatenacion de strings.
+    columna_estado_idx: si se define, esa columna se pinta con un punto de color segun ESTADO_COLORES.
+    """
+    header_html = "".join(f"<th>{c}</th>" for c in columnas)
+
+    partes = []
+    for fila in filas:
+        celdas = []
+        for idx, valor in enumerate(fila):
+            valor_fmt = formato_valor(valor)
+            if idx == columna_estado_idx:
+                color = ESTADO_COLORES.get(valor_fmt, "#999")
+                celdas.append(
+                    f'<td style="text-align:left"><span class="status-dot-cell" '
+                    f'style="background:{color}"></span>{valor_fmt}</td>'
+                )
+            else:
+                celdas.append(f"<td>{valor_fmt}</td>")
+        partes.append(f"<tr>{''.join(celdas)}</tr>")
+
+    body_html = "".join(partes)
+
+    return f"""
+    <div class="detail-table-outer">
+        <div class="detail-table-wrap">
+            <table class="detail-table">
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>{body_html}</tbody>
+            </table>
+        </div>
+    </div>
+    """
+
+
+def render_card(contenido_html: str, titulo: str | None = None) -> str:
+    """Envuelve contenido HTML en una tarjeta blanca en UN SOLO string.
+
+    Streamlit renderiza cada st.markdown como un fragmento HTML aislado:
+    abrir el <div> en una llamada y el contenido en otra deja el div vacio
+    (el navegador lo autocierra) y el contenido cae fuera, sin estilo.
+    Por eso el div y su contenido deben ir siempre en un unico st.markdown.
+    """
+    titulo_html = f'<div class="card-title">{titulo}</div>' if titulo else ""
+    return f'<div class="card">{titulo_html}{contenido_html}</div>'
+
+
+def _formato_fecha(valor) -> str:
+    valor_fmt = formato_valor(valor)
+    if valor_fmt == "":
+        return ""
+    if hasattr(valor_fmt, "strftime"):
+        return valor_fmt.strftime("%d/%m")
+    try:
+        return pd.to_datetime(valor_fmt).strftime("%d/%m")
+    except (ValueError, TypeError):
+        return str(valor_fmt)
+
+
+def _formato_numero(valor) -> str:
+    valor_fmt = formato_valor(valor)
+    if isinstance(valor_fmt, (int, float)):
+        return f"{valor_fmt:,.0f}"
+    return valor_fmt
+
+
+def render_grouped_table(filas: list[dict]) -> str:
+    """
+    Tabla HTML con 2 niveles de agrupacion visual, `filas` debe venir ya
+    ordenada por material y por centro (una fila por IdCentro real):
+      - Material: ID/Material/UM con rowspan sobre TODAS sus filas de IdCentro.
+      - Centro: solo la PASTILLA se agrupa (rowspan) cuando varios IdCentro
+        caen en el mismo nombre de centro (ej. CPS1+CPS2 -> "Super").
+        Inventario/Necesidad/Entrega Pendiente/Fecha Entrega NO se agrupan:
+        cada IdCentro muestra sus propios valores en su propia fila.
+    Construida con listas + "".join(...), nunca iterrows + concatenacion.
+    """
+    columnas = ["ID", "Material", "UM", "Centro", "IdCentro", "Inventario", "Necesidad", "Entrega Pendiente", "Fecha Entrega"]
+    header_html = "".join(f"<th>{c}</th>" for c in columnas)
+
+    materiales: dict[str, list[dict]] = {}
+    orden_materiales: list[str] = []
+    for fila in filas:
+        id_mat = fila["IdMaterial"]
+        if id_mat not in materiales:
+            materiales[id_mat] = []
+            orden_materiales.append(id_mat)
+        materiales[id_mat].append(fila)
+
+    partes = []
+    for id_mat in orden_materiales:
+        filas_material = materiales[id_mat]
+        primera = filas_material[0]
+        total_filas_material = len(filas_material)
+        borde_grupo = "border-bottom:2px solid #013066;"
+
+        # Cuenta cuantas filas consecutivas comparten el mismo Centro, para
+        # saber el rowspan de la pastilla sin tocar Inventario/Necesidad/etc.
+        rowspan_restante = 0
+        for i, fila in enumerate(filas_material):
+            celdas = []
+            if i == 0:
+                celdas.append(f'<td rowspan="{total_filas_material}">{formato_valor(primera["IdMaterial"])}</td>')
+                celdas.append(f'<td rowspan="{total_filas_material}" style="text-align:left">{formato_valor(primera["Material"])}</td>')
+                celdas.append(f'<td rowspan="{total_filas_material}">{formato_valor(primera["UnidadMedida"])}</td>')
+
+            if rowspan_restante == 0:
+                rowspan_restante = 1
+                while (
+                    i + rowspan_restante < total_filas_material
+                    and filas_material[i + rowspan_restante]["Centro"] == fila["Centro"]
+                ):
+                    rowspan_restante += 1
+                centro_nombre = formato_valor(fila["Centro"])
+                color_centro = CENTRO_COLORES.get(centro_nombre, "#546E7A")
+                celdas.append(f'<td rowspan="{rowspan_restante}">{render_pill(centro_nombre, color_centro)}</td>')
+
+            celdas.append(f'<td>{formato_valor(fila["IdCentro"])}</td>')
+            celdas.append(f"<td>{_formato_numero(fila['Inventario'])}</td>")
+            celdas.append(f"<td>{_formato_numero(fila['Necesidad'])}</td>")
+            celdas.append(f"<td>{_formato_numero(fila['EntregaPendiente'])}</td>")
+            celdas.append(f'<td>{_formato_fecha(fila["FechaEntrega"])}</td>')
+
+            rowspan_restante -= 1
+
+            estilo_borde = f' style="{borde_grupo}"' if i == total_filas_material - 1 else ""
+            partes.append(f"<tr{estilo_borde}>{''.join(celdas)}</tr>")
+
+    body_html = "".join(partes)
+
+    return f"""
+    <div class="detail-table-outer">
+        <div class="detail-table-wrap">
+            <table class="detail-table">
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>{body_html}</tbody>
+            </table>
+        </div>
+    </div>
+    """
+
+
+def render_pill_filtro_css(opciones: list[str], activo: str | None, prefijo_key: str) -> str:
+    """CSS que colorea cada boton-pastilla del filtro de Centro con el mismo
+    color de CENTRO_COLORES que usa la tabla, y resalta el activo."""
+    reglas = []
+    for nombre in opciones:
+        color = CENTRO_COLORES.get(nombre, "#546E7A")
+        clave_css = f"{prefijo_key}_{nombre}".replace(" ", "_")
+        seleccionado = nombre == activo
+        anillo = "box-shadow: 0 0 0 3px #013066;" if seleccionado else ""
+        reglas.append(f"""
+        .st-key-{clave_css} button {{
+            background-color: {color} !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            border-radius: 20px !important;
+            font-weight: 700 !important;
+            {anillo}
+        }}
+        """)
+    return f"<style>{''.join(reglas)}</style>"
+
+
+def render_traslados_table(filas: list[dict]) -> str:
+    """
+    Tabla HTML agrupada: ID/Material/UM con rowspan sobre todo el material,
+    y Origen con rowspan sobre sus destinos consecutivos dentro del mismo
+    material (cuando un origen reparte a varios destinos). `filas` debe
+    venir ordenada por (IdMaterial, Origen). Orden de columnas:
+    ID, Material, UM, Origen, Cantidad, Destino, Clasificacion.
+    Construida con listas + "".join(...), nunca iterrows + concatenacion.
+    """
+    columnas = ["ID", "Material", "UM", "Origen", "Cantidad", "Destino", "Clasificacion"]
+    header_html = "".join(f"<th>{c}</th>" for c in columnas)
+
+    materiales: dict[str, list[dict]] = {}
+    orden_materiales: list[str] = []
+    for fila in filas:
+        id_mat = fila["IdMaterial"]
+        if id_mat not in materiales:
+            materiales[id_mat] = []
+            orden_materiales.append(id_mat)
+        materiales[id_mat].append(fila)
+
+    partes = []
+    for id_mat in orden_materiales:
+        filas_material = materiales[id_mat]
+        primera = filas_material[0]
+        total_filas_material = len(filas_material)
+        borde_grupo = "border-bottom:2px solid #013066;"
+
+        rowspan_restante = 0
+        for i, fila in enumerate(filas_material):
+            celdas = []
+            if i == 0:
+                celdas.append(f'<td rowspan="{total_filas_material}">{formato_valor(primera["IdMaterial"])}</td>')
+                celdas.append(f'<td rowspan="{total_filas_material}" style="text-align:left">{formato_valor(primera["Material"])}</td>')
+                celdas.append(f'<td rowspan="{total_filas_material}">{formato_valor(primera["UnidadMedida"])}</td>')
+
+            if rowspan_restante == 0:
+                rowspan_restante = 1
+                while (
+                    i + rowspan_restante < total_filas_material
+                    and filas_material[i + rowspan_restante]["Origen"] == fila["Origen"]
+                ):
+                    rowspan_restante += 1
+                celdas.append(f'<td rowspan="{rowspan_restante}">{formato_valor(fila["Origen"])}</td>')
+
+            clasificacion = formato_valor(fila["Clasificacion"])
+            color = CLASIFICACION_COLORES.get(clasificacion, "#546E7A")
+            celdas.append(f"<td>{_formato_numero(fila['Cantidad'])}</td>")
+            celdas.append(f'<td>{formato_valor(fila["Destino"])}</td>')
+            celdas.append(f"<td>{render_pill(clasificacion, color)}</td>")
+
+            rowspan_restante -= 1
+
+            estilo_borde = f' style="{borde_grupo}"' if i == total_filas_material - 1 else ""
+            partes.append(f"<tr{estilo_borde}>{''.join(celdas)}</tr>")
+
+    body_html = "".join(partes)
+
+    return f"""
+    <div class="detail-table-outer">
+        <div class="detail-table-wrap">
+            <table class="detail-table">
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>{body_html}</tbody>
+            </table>
+        </div>
+    </div>
+    """
+
+
+def render_section_title(texto: str) -> str:
+    return f'<div class="section-title">{texto}<div class="rule"></div></div>'
+
+
+def render_filtro_label(texto: str) -> str:
+    return f'<span class="filtro-label">{texto}</span>'
